@@ -89,19 +89,22 @@
  *  v0.02 - Added state and schedule cleanup to configure command if you move from an old driver
  *
  *  v0.01 - Initial public release
+ *
+ *  v0.1  - Changed Presence to Health (@Danabw)
  */
 
 import hubitat.zigbee.zcl.DataType
 import hubitat.helper.HexUtils
 
 metadata {
-	definition (name: "Xiaomi Aqara Mijia Sensors and Switches", namespace: "waytotheweb", author: "Jonathan Michaelson", importUrl: "https://raw.githubusercontent.com/waytotheweb/hubitat/main/drivers/Xiaomi_Aqara_Mijia_Sensors.groovy") {
+	definition (name: "Xiaomi/Aqara/Mijia Sensors/Switches w/Health", namespace: "waytotheweb", author: "Jonathan Michaelson", importUrl: "https://raw.githubusercontent.com/waytotheweb/hubitat/main/drivers/Xiaomi_Aqara_Mijia_Sensors.groovy") {
 		capability "Battery"
 		capability "VoltageMeasurement"
 		capability "Sensor"
 		capability "Refresh"
 		capability "Configuration"
-		capability "PresenceSensor"
+//		capability "PresenceSensor"        
+		capability "HealthCheck"    // Added
 
 		capability "IlluminanceMeasurement"
 		capability "RelativeHumidityMeasurement"
@@ -122,6 +125,9 @@ metadata {
 		attribute "released", "number"
 		attribute "shaken", "number"
 		attribute "temperature", "number"
+        attribute 'healthStatus', 'enum', ['unknown', 'offline', 'online']    //Added 
+        // END:  getMetadataAttributesForLastCheckin()
+        // BEGIN:getZigbeeBatteryMetadataAttributes()
 
 
 // If you want to use these you will have to remove the comment prefix for
@@ -135,8 +141,8 @@ metadata {
 //		command "closed"
 //		command "active"
 //		command "inactive"
-//		command "present"
-//		command "notPresent"
+//		command "online"
+//		command "offline"
 //		command "push"
 //		command "hold"
 //		command "doubleTap"
@@ -160,13 +166,15 @@ metadata {
 		fingerprint profileId: "0104", inClusters: "0000,0012,0006,0001", outClusters: "0000", manufacturer: "LUMI", model: "lumi.sensor_swit", deviceJoinName: "Xiaomi Aqara Wireless Mini Switch"
 		fingerprint profileId: "0104", inClusters: "0000,0003,0001", outClusters: "0019", manufacturer: "LUMI", model: "lumi.sensor_wleak.aq1", deviceJoinName: "Xiaomi Aqara Water Leak Sensor"
 
-	}
+    }
 	preferences {
 		input name: "infoLogging", type: "bool", title: "Enable info message logging", description: "", defaultValue: true
 		input name: "debugLogging", type: "bool", title: "Enable debug message logging", description: "", defaultValue: false
-		input name: "presenceDetect", type: "bool", title: "Enable Presence Detection", description: "This will keep track of the devices presence and will change state if no data received within the Presence Timeout. If it does lose presence try pushing the reset button on the device if available.", defaultValue: true
-		input name: "presenceHours", type: "enum", title: "Presence Timeout", description: "The number of hours before a device is considered 'not present'.<br>Note: Some of these devices only update their battery every 6 hours.", defaultValue: "12", options: ["1","2","3","4","6","12","24"]
-		input name: "holdDuration", type: "number", title: "Button Hold Duration", description: "For WXKG01LM, this is how long the button needs to be pushed to be in a held state.<br> For WXKG02LM, WXKG03LM it is how long the button needs to be held to register a release state.<br> Time is in seconds, decimals can be used, e.g. 0.5 is 500ms", defaultValue: "1"
+//      input name: "presenceDetect", type: "bool", title: "Enable Presence Detection", description: "This will keep track of the devices presence and will change state if no data received within the Presence Timeout. If it does lose presence try pushing the reset button on the device if available.", defaultValue: true
+//		input name: "presenceHours", type: "enum", title: "Presence Timeout", description: "The number of hours before a device is considered 'not present'.<br>Note: Some of these devices only update their battery every 6 hours.", defaultValue: "12", options: ["1","2","3","4","6","12","24"]
+        input name: "healthStatusEnabled", type: "bool", title: "Enable Health Detection", description: "This will keep track of the devices health and will change state if no data received within the Health Timeout. If it does lose presence try pushing the reset button on the device if available.", defaultValue: online    //Added
+		input name: "healthHours", type: "enum", title: "Health Timeout", description: "The number of hours before a device is considered 'offline'.<br>Note: Some of these devices only update their battery every 6 hours.", defaultValue: "12", options: ["1","2","3","4","6","12","24"]    //Mod
+        input name: "holdDuration", type: "number", title: "Button Hold Duration", description: "For WXKG01LM, this is how long the button needs to be pushed to be in a held state.<br> For WXKG02LM, WXKG03LM it is how long the button needs to be held to register a release state.<br> Time is in seconds, decimals can be used, e.g. 0.5 is 500ms", defaultValue: "1"
 		input name: "allButtons", type: "bool", title: "WXKG01LM Button Function", description: "By default, the WXKG01LM is treated as a single button. To enable separate buttons for each press type, enable this option.", defaultValue: false
 		input name: "temperatureOffset", type: "number", title: "Temperature Offset", description: "This setting compensates for an inaccurate temperature sensor. For example, set to -7 if the temperature is 7 degress too warm.", defaultValue: "0"
 		input name: "internalTemperature", type: "bool", title: "Experimental Internal Temperature", description: "Some of these devices have an internal temperature sensor. It only reports when the battery reports (usually every 50 minutes) and is not very accurate and usually requires an offset.", defaultValue: false
@@ -451,13 +459,13 @@ def parse(String description) {
 			}
 		}
 	}
-	if (presenceDetect != false) {
-		unschedule(presenceTracker)
-		if (device.currentValue("presence") != "present"){
-			sendEvent("name": "presence", "value":  "present")
-			if (debugLogging) log.debug "$device.displayName present"
+	if (healthDetect != false) {
+		unschedule(healthStart)
+		if (device.currentValue("healthStatus") != "online"){
+			sendEvent("name": "healthStatus", "value":  "online")
+			if (debugLogging) log.debug "$device.displayName online"
 		}
-		presenceStart()
+		healthStart()
 	}
 }
 
@@ -471,14 +479,20 @@ def closed() {
 	if (infoLogging) log.info "$device.displayName contact changed to closed [virtual]"
 }
 
-def present() {
-	sendEvent("name": "presence", "value":  "present", isStateChange: true)
-	if (infoLogging) log.info "$device.displayName contact changed to present [virtual]"
+//    Defined method for Ping
+
+def ping () {
+     refresh()
 }
 
-def notPresent() {
-	sendEvent("name": "presence", "value":  "not present", isStateChange: true)
-	if (infoLogging) log.info "$device.displayName contact changed to not present [virtual]"
+def online() {
+	sendEvent("name": "healthStatus", "value":  "online", isStateChange: true)
+	if (infoLogging) log.info "$device.displayName contact changed to health [virtual]"
+}
+
+def offline() {
+	sendEvent("name": "healthStatus", "value":  "offline", isStateChange: true)
+	if (infoLogging) log.info "$device.displayName contact changed to offline [virtual]"
 }
 
 def active() {
@@ -527,22 +541,22 @@ def dry() {
 }
 
 def updated() {
-	unschedule(presenceTracker)
-	if (presenceDetect != false) presenceStart()
+	unschedule(healthStart)
+	if (healthDetect != offline) healthStart()
 }
 
-def presenceTracker() {
-	sendEvent("name": "presence", "value":  "not present")
-	if (infoLogging) log.info "$device.displayName not present"
-	presenceStart()
+def healthStatus() {
+	sendEvent("name": "healthStatus", "value":  "offline")
+	if (infoLogging) log.info "$device.displayName offline"
+	healthStart()
 }
 
-def presenceStart() {
-	if (presenceHours == null || presenceHours == "") presenceHours = "12"
-	def scheduleHours = presenceHours.toInteger() * 60 * 60
+def healthStart() {
+	if (healthStatusHours == null || healthStatusHours == "") healthStatusHours = "12"
+	def scheduleHours = healthStatusHours.toInteger() * 60 * 60
 	if (scheduleHours < 1 || scheduleHours > 86400) scheduleHours = 43200
-	if (infoLogging) log.info "$device.displayName presense check in ${presenceHours} hours"
-	runIn(scheduleHours, "presenceTracker")
+	if (infoLogging) log.info "$device.displayName health check check in ${healthHours} hours"
+	runIn(scheduleHours, "healthStart")
 }
 
 def deviceHeld() {
@@ -643,7 +657,9 @@ def configure() {
 	unschedule()
 	state.clear()
 
-	if (presenceDetect != false) presenceStart()
+//	if (presenceDetect != false) presenceStart() 
+
+    if(healthStatusEnabled !=false) healthStart()
 
 	cmd = [
 		"zdo bind 0x${device.deviceNetworkId} 0x${device.endpointId} 0x01 0x0000 {${device.zigbeeId}} {}",
